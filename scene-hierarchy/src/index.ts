@@ -46,9 +46,11 @@ function init() {
    * we need to move the vertices up by 1.5
    */
   const position = boxGeometry.attributes.position;
-  for (let index = 0; index < position.count; index++) {
-    position.setY(index, position.getY(index) + 1.5);
-  }
+  // for (let index = 0; index < position.count; index++) {
+  //   position.setY(index, position.getY(index) + 1.5);
+  // }
+  // We can also apply a translation in order to move the vertices
+  position.applyMatrix4(new THREE.Matrix4().makeTranslation(0, height / 2, 0));
   const material = new THREE.MeshPhongMaterial();
   const boxPrototype = new THREE.Mesh(boxGeometry, material);
 
