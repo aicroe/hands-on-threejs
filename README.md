@@ -23,3 +23,8 @@
 * [spot-and-area-lighting](./spot-and-area-lighting/src/index.ts)
 * [shadows](./shadows/src/index.ts)
 * [physically-correct-lighting](./physically-correct-lighting/src/index.ts)
+
+## Loading Assets
+* [gltf-loader](./gltf-loader/src/index.ts)
+* [fbx-loader](./fbx-loader/src/index.ts)
+* [obj-loader](./fbx-loader/src/index.ts)
