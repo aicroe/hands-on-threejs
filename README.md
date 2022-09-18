@@ -9,6 +9,7 @@
 * [basic-and-lamber materials](./basic-and-lambert-materials/src/index.ts)
 * [spheres-and-cylinders](./spheres-and-cylinders/src/index.ts)
 * [cones-and-tori](./cones-and-tori/src/index.ts)
+* [lathe-and-extrude-geometries](./lathe-and-extrude-geometries/src/index.ts)
 
 ## Scene Hierarchy and Cameras
 * [scene-hierarchy](./scene-hierarchy/src/index.ts)
