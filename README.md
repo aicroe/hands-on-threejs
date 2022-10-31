@@ -29,3 +29,10 @@
 * [gltf-loader](./gltf-loader/src/index.ts)
 * [fbx-loader](./fbx-loader/src/index.ts)
 * [obj-loader](./fbx-loader/src/index.ts)
+
+## The Animation System
+* [animation-basis](./animation-basis/src/index.ts)
+* [animate-asset-with-armature](./animate-asset-with-armature/src/index.ts)
+* [switching-and-blending-animations](./switching-and-blending-animations/src/index.ts)
+* [splitting-animation-clip](./splitting-animation-clip/src/index.ts)
+* [wasd-control](./wasd-control/src/index.ts)
