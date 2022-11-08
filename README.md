@@ -36,3 +36,8 @@
 * [switching-and-blending-animations](./switching-and-blending-animations/src/index.ts)
 * [splitting-animation-clip](./splitting-animation-clip/src/index.ts)
 * [wasd-control](./wasd-control/src/index.ts)
+
+## Post-Processing and GLSL
+* [post-processing](./post-processing/src/index.ts)
+* [introducing-glsl](./introducing-glsl/src/index.ts)
+* [molten-lava-ball](./molten-lava-ball/src/index.ts)
