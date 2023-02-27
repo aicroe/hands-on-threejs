@@ -2,8 +2,9 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 
+import { createDummyEnvironment } from './create-dummy-environment';
 import { JoyStick } from './joystick';
-import { Player, PlayerAnimation } from './player';
+import { Player, PlayerAnimation, PlayerCamera } from './player';
 import { Preloader } from './preloader';
 import { SFX } from './sfx';
 
@@ -24,6 +25,7 @@ export class Game {
   private player: Player = {};
   // private stats?: Stats;
   private camera?: THREE.PerspectiveCamera;
+  private camerasOrder: PlayerCamera[] = [];
   private scene?: THREE.Scene;
   private renderer?: THREE.WebGLRenderer;
   private cellSize = 16;
@@ -33,6 +35,8 @@ export class Game {
   private score = 0;
   private debug = false;
   private debugPhysics = false;
+  private cameraFade = 0.05;
+  private environmentProxy?: THREE.Object3D;
   private messages = {
     text: [
       'Welcome to LostTreasure',
@@ -44,10 +48,6 @@ export class Game {
   private anims: PlayerAnimation[];
   private mouse?: THREE.Vector2;
 
-  set activeCamera(object: THREE.Object3D) {
-    this.player.cameras!.active = object;
-  }
-
   constructor() {
     this.container = document.createElement('div');
     this.container.style.height = '100%';
@@ -57,10 +57,16 @@ export class Game {
 
     this.mode = GameMode.PRELOAD;
     this.anims = [
-      PlayerAnimation.RUN,
       PlayerAnimation.GATHER_OBJECTS,
       PlayerAnimation.LOOK_AROUND,
+      PlayerAnimation.PUSH_BUTTON,
+      PlayerAnimation.RUN,
+      PlayerAnimation.STUMBLE_BACKWARDS,
     ];
+
+    this.configureCameraButton();
+
+    const sfxExt = SFX.supportsAudioType('mp3') ? 'mp3' : 'ogg';
     new Preloader({
       assets: this.anims.map((anim) => `${this.assetsPath}fbx/${anim}.fbx`),
       oncomplete: () => {
@@ -70,7 +76,7 @@ export class Game {
     });
   }
 
-  init() {
+  private init(): void {
     this.mode = GameMode.INITIALIZING;
 
     this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
@@ -130,10 +136,11 @@ export class Game {
       this.player.walk = object.animations[0];
 
       new JoyStick({
-        onMove: this.movePlayer,
+        onMove: this.handleJoystickPlayerMove,
       });
       this.createCameras();
       this.loadNextAnim(loader);
+      this.createDummyEnvironment();
     });
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -154,7 +161,7 @@ export class Game {
     }
   }
 
-  initSfx() {
+  private initSfx() {
     const context = new AudioContext();
     new SFX({
       context,
@@ -164,14 +171,49 @@ export class Game {
     });
   }
 
-  movePlayer = (forward: number, turn: number) => {
+  private configureCameraButton(): void {
+    const btn = document.createElement('button')!;
+    btn.style.cssText = `
+      padding: 4px 8px;
+      position: absolute;
+      cursor: pointer;
+      right: 20px;
+      bottom: 20px;
+      background: rgba(126, 126, 126, 0.5);
+      font-size: 30px;
+      border-radius: 50%;
+      border: #444 solid medium;
+    `
+    btn.innerHTML = '📷';
+    btn.addEventListener('click', () => this.switchCamera());
+    document.body.appendChild(btn);
+  }
+
+  private switchCamera(fade = 0.05): void {
+    if (!this.player.cameras) {
+      return;
+    }
+
+    const [activeCameraName] = Object
+      .entries(this.player.cameras)
+      .find(([, camera]) => camera === this.player.cameras?.active)!;
+    const activeCameraIndex = this.camerasOrder.findIndex(
+      (cameraName) => cameraName === activeCameraName,
+    );
+    const nextCameraIndex = (activeCameraIndex + 1) % this.camerasOrder.length;
+    this.setActiveCamera(this.player.cameras[this.camerasOrder[nextCameraIndex]]!);
+    this.cameraFade = fade;
+  }
+
+  private handleJoystickPlayerMove = (forward: number, turn: number) => {
+    turn = -turn; // Flip direction
     if (forward > 0) {
       if (this.player.action !== PlayerAnimation.WALK) {
-        this.action = PlayerAnimation.WALK;
+        this.setAction(PlayerAnimation.WALK);
       }
     } else {
       if (this.player.action === PlayerAnimation.WALK) {
-        this.action = PlayerAnimation.LOOK_AROUND;
+        this.setAction(PlayerAnimation.LOOK_AROUND);
       }
     }
     if (forward === 0 && turn === 0) {
@@ -181,38 +223,48 @@ export class Game {
     }
   }
 
-  createCameras() {
-    const offset = new THREE.Vector3(0, 60, 0);
+  private createCameras(): void {
     const front = new THREE.Object3D();
     front.position.set(112, 100, 200);
-    front.quaternion.set(0.07133122876303646, -0.17495722675648318, -0.006135162916936811, -0.9819695435118246);
     front.parent = this.player.object!;
 
     const back = new THREE.Object3D();
     back.position.set(0, 100, -250);
-    back.quaternion.set(-0.001079297317118498, -0.9994228131639347, -0.011748701462123836, -0.031856610911161515);
     back.parent = this.player.object!;
 
     const wide = new THREE.Object3D();
     wide.position.set(178, 139, 465);
-    wide.quaternion.set(0.07133122876303646, -0.17495722675648318, -0.006135162916936811, -0.9819695435118246);
     wide.parent = this.player.object!;
 
     const overhead = new THREE.Object3D();
     overhead.position.set(0, 400, 0);
-    overhead.quaternion.set(0.02806727427333993, 0.7629212874133846, 0.6456029820939627, 0.018977008134915086);
     overhead.parent = this.player.object!;
 
     const collect = new THREE.Object3D();
     collect.position.set(40, 82, 94);
-    collect.quaternion.set(0.07133122876303646, -0.17495722675648318, -0.006135162916936811, -0.9819695435118246);
     collect.parent = this.player.object!;
 
     this.player.cameras = { front, back, wide, overhead, collect };
-    this.activeCamera = this.player.cameras.front!;
+    this.setActiveCamera(this.player.cameras.wide!);
+    this.cameraFade = 0.1;
+    this.camerasOrder = [
+      PlayerCamera.FRONT,
+      PlayerCamera.BACK,
+      PlayerCamera.WIDE,
+      PlayerCamera.OVERHEAD,
+      PlayerCamera.COLLECT
+    ];
+
+    setTimeout(() => {
+      this.setActiveCamera(this.player.cameras!.back!);
+    }, 2000);
   }
 
-  loadNextAnim(loader: FBXLoader) {
+  private setActiveCamera(object: THREE.Object3D): void {
+    this.player.cameras!.active = object;
+  }
+
+  private loadNextAnim(loader: FBXLoader): void {
     let anim = this.anims.pop()!;
     loader.load(`${this.assetsPath}fbx/${anim}.fbx`, (object) => {
       this.player[anim] = object.animations[0];
@@ -220,7 +272,7 @@ export class Game {
         this.loadNextAnim(loader);
       } else {
         this.anims = [];
-        this.action = PlayerAnimation.LOOK_AROUND;
+        this.setAction(PlayerAnimation.LOOK_AROUND);
         this.mode = GameMode.ACTIVE;
       }
     });
@@ -237,14 +289,14 @@ export class Game {
   //   return new CANNON.Trimesh(vertices, indices);
   // }
 
-  getMousePosition(clientX: number, clientY: number) {
+  private getMousePosition(clientX: number, clientY: number): THREE.Vector2 {
     const pos = new THREE.Vector2();
     pos.x = (clientX / this.renderer!.domElement.clientWidth) * 2 - 1;
     pos.y = -(clientY / this.renderer!.domElement.clientHeight) * 2 + 1;
     return pos;
   }
 
-  tap(evt: (MouseEvent & { targetTouches?: undefined }) | TouchEvent) {
+  private tap(evt: (MouseEvent & { targetTouches?: undefined }) | TouchEvent): void {
     if (!this.interactive) return;
 
     let clientX = evt.targetTouches ? evt.targetTouches[0].pageX : evt.clientX;
@@ -264,7 +316,7 @@ export class Game {
 
   // }
 
-  showMessage(msg: string, fontSize = 20, onOK: () => void) {
+  private showMessage(msg: string, fontSize = 20, onOK: () => void): void {
     const txt = document.getElementById('message_text')!;
     txt.innerHTML = msg;
     txt.style.fontSize = fontSize + 'px';
@@ -283,7 +335,7 @@ export class Game {
     panel.style.display = 'flex';
   }
 
-  loadJSON(name: string, callback: (response: string) => void) {
+  private loadJSON(name: string, callback: (response: string) => void): void {
     const xobj = new XMLHttpRequest();
     xobj.overrideMimeType('application/json');
     xobj.open('GET', `${name}.json`, true); // Replace 'my_data' with the path to your file
@@ -296,7 +348,7 @@ export class Game {
     xobj.send(null);
   }
 
-  onWindowResize() {
+  private onWindowResize = () => {
     if (!this.camera || !this.renderer) {
       return;
     }
@@ -306,7 +358,7 @@ export class Game {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  set action(name: PlayerAnimation) {
+  private setAction(name: PlayerAnimation): void {
     if (!this.player.mixer || this.player.action === name) {
       return;
     }
@@ -320,45 +372,120 @@ export class Game {
 
     const anim = this.player[name];
     const action = this.player.mixer.clipAction(anim!, this.player.root);
+    const lastActionWasGatherObjs = this.player.action === PlayerAnimation.GATHER_OBJECTS;
 
-    if (this.player.action === PlayerAnimation.GATHER_OBJECTS) {
+    if (lastActionWasGatherObjs) {
       this.player.mixer.removeEventListener('finished', this.gatherObjectsFinished);
     }
     if (name === PlayerAnimation.GATHER_OBJECTS) {
       action.loop = THREE.LoopOnce;
+      action.clampWhenFinished = true;
       this.player.mixer.addEventListener('finished', this.gatherObjectsFinished);
     }
 
     this.player.action = name;
-    action.reset().fadeIn(0.5).play();
+    if (lastActionWasGatherObjs) {
+      this.player.mixer.stopAllAction();
+      action.reset().play();
+    } else {
+      action.reset().fadeIn(0.5).play();
+    }
   }
 
-  gatherObjectsFinished = () => {
-    this.action = PlayerAnimation.LOOK_AROUND;
+  private gatherObjectsFinished = () => {
+    this.setAction(PlayerAnimation.LOOK_AROUND);
   }
 
-  animate() {
-    const dt = this.clock.getDelta();
+  private movePlayer(delta: number): void {
+    if (!this.player.object || !this.environmentProxy) {
+      return;
+    }
+
+    const pos = this.player.object.position.clone();
+    pos.y += 60;
+    const direction = this.player.object.getWorldDirection(new THREE.Vector3());
+    const raycaster = new THREE.Raycaster(pos, direction);
+    let blocked = false;
+
+    for (const box of this.environmentProxy.children) {
+      const intersect = raycaster.intersectObject(box);
+      if (intersect.length > 0) {
+        if (intersect[0].distance < 50) {
+          blocked = true;
+          break;
+        }
+      }
+    }
+
+    if (!blocked && this.player.move!.forward > 0) {
+      this.player.object.translateZ(delta * 100);
+    }
+
+    //cast left
+    {
+      direction.set(-1, 0, 0);
+      direction.applyMatrix4(this.player.object.matrix);
+      direction.normalize();
+      const raycaster = new THREE.Raycaster(pos, direction);
+
+      for (const box of this.environmentProxy.children) {
+        const intersect = raycaster.intersectObject(box);
+        if (intersect.length > 0) {
+          if (intersect[0].distance < 80) {
+            this.player.object.translateX(-(intersect[0].distance - 80));
+            break;
+          }
+        }
+      }
+    }
+
+    //cast right
+    {
+      direction.set(1, 0, 0);
+      direction.applyMatrix4(this.player.object.matrix);
+      direction.normalize();
+      const raycaster = new THREE.Raycaster(pos, direction);
+
+      for (const box of this.environmentProxy.children) {
+        const intersect = raycaster.intersectObject(box);
+        if (intersect.length > 0) {
+          if (intersect[0].distance < 80) {
+            this.player.object.translateX(intersect[0].distance - 80);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  private animate(): void {
+    const delta = this.clock.getDelta();
     requestAnimationFrame(() => this.animate());
 
     if (this.player.mixer !== undefined && this.mode === GameMode.ACTIVE) {
-      this.player.mixer.update(dt)
+      this.player.mixer.update(delta)
     }
 
     if (this.player.move !== undefined) {
-      if (this.player.move.forward > 0) {
-        this.player.object!.translateZ(dt * 100);
-      }
-      this.player.object!.rotateY(this.player.move.turn * dt);
+      this.movePlayer(delta)
+      this.player.object!.rotateY(this.player.move.turn * delta);
     }
 
     if (this.player.cameras !== undefined && this.player.cameras.active !== undefined) {
-      this.camera!.position.lerp(this.player.cameras.active.getWorldPosition(new THREE.Vector3()), 0.05);
-      this.camera!.quaternion.slerp(this.player.cameras.active.getWorldQuaternion(new THREE.Quaternion()), 0.05);
+      this.camera!.position.lerp(this.player.cameras.active.getWorldPosition(new THREE.Vector3()), this.cameraFade);
+      const pos = this.player.object!.position.clone();
+      pos.y += 60;
+      this.camera!.lookAt(pos);
     }
 
     this.renderer!.render(this.scene!, this.camera!);
 
     // if (this.stats != undefined) this.stats.update();
+  }
+
+  private createDummyEnvironment(): void {
+    const env = createDummyEnvironment();
+    this.scene!.add(env);
+    this.environmentProxy = env;
   }
 }

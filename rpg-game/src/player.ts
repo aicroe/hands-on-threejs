@@ -11,15 +11,17 @@ export enum PlayerAnimation {
   STUMBLE_BACKWARDS = 'stumble-backwards',
 }
 
+export enum PlayerCamera {
+  FRONT = 'front',
+  BACK = 'back',
+  WIDE = 'wide',
+  OVERHEAD = 'overhead',
+  COLLECT = 'collect',
+  ACTIVE = 'active',
+}
+
 export type Player = {
-  cameras?: {
-    front?: THREE.Object3D;
-    back?: THREE.Object3D;
-    wide?: THREE.Object3D;
-    overhead?: THREE.Object3D;
-    collect?: THREE.Object3D;
-    active?: THREE.Object3D;
-  };
+  cameras?: Partial<Record<PlayerCamera, THREE.Object3D>>;
   mixer?: THREE.AnimationMixer;
   root?: THREE.Object3D | THREE.AnimationObjectGroup;
   object?: THREE.Object3D;
