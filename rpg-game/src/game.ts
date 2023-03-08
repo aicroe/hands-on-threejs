@@ -1,8 +1,6 @@
-// import * as CANNON from 'cannon';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 
-import { createDummyEnvironment } from './create-dummy-environment';
 import { JoyStick } from './joystick';
 import { Player, PlayerAnimation, PlayerCamera } from './player';
 import { Preloader } from './preloader';
@@ -49,6 +47,8 @@ export class Game {
   private mouse?: THREE.Vector2;
 
   constructor() {
+    this.configureCameraButton();
+    this.configureOverlay();
     this.container = document.createElement('div');
     this.container.style.height = '100%';
     document.body.appendChild(this.container);
@@ -64,11 +64,13 @@ export class Game {
       PlayerAnimation.STUMBLE_BACKWARDS,
     ];
 
-    this.configureCameraButton();
-
     const sfxExt = SFX.supportsAudioType('mp3') ? 'mp3' : 'ogg';
     new Preloader({
-      assets: this.anims.map((anim) => `${this.assetsPath}fbx/${anim}.fbx`),
+      assets: [
+        `${this.assetsPath}sfx/gliss.${sfxExt}`,
+        `${this.assetsPath}fbx/environment.fbx`,
+        ...this.anims.map((anim) => `${this.assetsPath}fbx/${anim}.fbx`),
+      ],
       oncomplete: () => {
         this.init();
         this.animate();
@@ -80,9 +82,11 @@ export class Game {
     this.mode = GameMode.INITIALIZING;
 
     this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
+
+    const sceneColor = 0x605050;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0xa0a0a0);
-    this.scene.fog = new THREE.Fog(0xa0a0a0, 200, 1000);
+    this.scene.background = new THREE.Color(sceneColor);
+    this.scene.fog = new THREE.Fog(sceneColor, 500, 1500);
 
     {
       const light = new THREE.HemisphereLight(0xffffff, 0x444444);
@@ -94,27 +98,15 @@ export class Game {
       const light = new THREE.DirectionalLight(0xffffff);
       light.position.set(0, 200, 100);
       light.castShadow = true;
-      light.shadow.camera.top = 180;
-      light.shadow.camera.bottom = -100;
-      light.shadow.camera.left = -120;
-      light.shadow.camera.right = 120;
+      light.shadow.mapSize.width = 2048;
+      light.shadow.mapSize.height = 2048;
+      light.shadow.camera.top = 3000;
+      light.shadow.camera.bottom = -3000;
+      light.shadow.camera.left = -3000;
+      light.shadow.camera.right = 3000;
+      light.shadow.camera.far = 3000;
       this.scene.add(light);
     }
-
-    // ground
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(2000, 2000),
-      new THREE.MeshPhongMaterial({ color: 0x999999, depthWrite: false }),
-    );
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
-
-    const grid = new THREE.GridHelper(2000, 40, 0x000000, 0x000000);
-    const gridMaterial = grid.material as THREE.Material;
-    gridMaterial.opacity = 0.2;
-    gridMaterial.transparent = true;
-    this.scene.add(grid);
 
     // model
     const loader = new FBXLoader();
@@ -123,6 +115,7 @@ export class Game {
       this.player.mixer = mixer;
       this.player.root = mixer.getRoot();
 
+      object.castShadow = true;
       object.name = 'Character';
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
@@ -139,8 +132,7 @@ export class Game {
         onMove: this.handleJoystickPlayerMove,
       });
       this.createCameras();
-      this.loadNextAnim(loader);
-      this.createDummyEnvironment();
+      this.loadEnvironment(loader);
     });
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -148,6 +140,7 @@ export class Game {
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // default THREE.PCFShadowMap
     this.container.appendChild(this.renderer.domElement);
 
     window.addEventListener('resize', () => {
@@ -171,6 +164,29 @@ export class Game {
     });
   }
 
+  private loadEnvironment(loader: FBXLoader) {
+    loader.load(`${this.assetsPath}fbx/environment.fbx`, (object) => {
+      this.scene!.add(object);
+
+      object.receiveShadow = true;
+      object.scale.set(0.8, 0.8, 0.8);
+      object.name = 'Environment';
+
+      object.traverse(function (child) {
+        if (child instanceof THREE.Mesh) {
+          if (child.name.includes('main')) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          } else if (child.name.includes('proxy')) {
+            child.material.visible = false;
+          }
+        }
+      });
+
+      this.loadNextAnim(loader);
+    });
+  }
+
   private configureCameraButton(): void {
     const btn = document.createElement('button')!;
     btn.style.cssText = `
@@ -187,6 +203,20 @@ export class Game {
     btn.innerHTML = '📷';
     btn.addEventListener('click', () => this.switchCamera());
     document.body.appendChild(btn);
+  }
+
+  private configureOverlay(): void {
+    const overlay = document.createElement('div');
+    overlay.id = 'overlay';
+    overlay.style.cssText = `
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: #000000;
+      z-index: 10;
+      opacity: 1;
+    `;
+    document.body.appendChild(overlay);
   }
 
   private switchCamera(fade = 0.05): void {
@@ -207,7 +237,18 @@ export class Game {
 
   private handleJoystickPlayerMove = (forward: number, turn: number) => {
     turn = -turn; // Flip direction
+
+    if (forward === 0 && turn === 0) {
+      delete this.player.move;
+    } else {
+      this.player.move = { forward, turn };
+    }
+
     if (forward > 0) {
+      if (this.player.action !== PlayerAnimation.WALK) {
+        this.setAction(PlayerAnimation.WALK);
+      }
+    } else if (forward < -0.2) {
       if (this.player.action !== PlayerAnimation.WALK) {
         this.setAction(PlayerAnimation.WALK);
       }
@@ -215,11 +256,6 @@ export class Game {
       if (this.player.action === PlayerAnimation.WALK) {
         this.setAction(PlayerAnimation.LOOK_AROUND);
       }
-    }
-    if (forward === 0 && turn === 0) {
-      delete this.player.move;
-    } else {
-      this.player.move = { forward, turn };
     }
   }
 
@@ -246,7 +282,6 @@ export class Game {
 
     this.player.cameras = { front, back, wide, overhead, collect };
     this.setActiveCamera(this.player.cameras.wide!);
-    this.cameraFade = 0.1;
     this.camerasOrder = [
       PlayerCamera.FRONT,
       PlayerCamera.BACK,
@@ -257,6 +292,10 @@ export class Game {
 
     setTimeout(() => {
       this.setActiveCamera(this.player.cameras!.back!);
+      this.cameraFade = 0.01;
+      setTimeout(() => {
+        this.cameraFade = 0.1;
+      }, 1500);
     }, 2000);
   }
 
@@ -274,20 +313,18 @@ export class Game {
         this.anims = [];
         this.setAction(PlayerAnimation.LOOK_AROUND);
         this.mode = GameMode.ACTIVE;
+        this.hideOverlay();
       }
     });
   }
 
-  // createCannonTrimesh(geometry) {
-  //   if (!geometry.isBufferGeometry) return null;
-
-  //   const posAttr = geometry.attributes.position;
-  //   const vertices = geometry.attributes.position.array;
-  //   let indices = [];
-  //   for (let i = 0; i < posAttr.count; i++) indices.push(i);
-
-  //   return new CANNON.Trimesh(vertices, indices);
-  // }
+  private hideOverlay(): void {
+    const overlay = document.getElementById('overlay') as HTMLDivElement;
+    overlay.classList.add('fade-in');
+    overlay.addEventListener('animationend', ({ target }) => {
+      (target as HTMLDivElement).style.display = 'none';
+    }, false);
+  }
 
   private getMousePosition(clientX: number, clientY: number): THREE.Vector2 {
     const pos = new THREE.Vector2();
@@ -295,26 +332,6 @@ export class Game {
     pos.y = -(clientY / this.renderer!.domElement.clientHeight) * 2 + 1;
     return pos;
   }
-
-  private tap(evt: (MouseEvent & { targetTouches?: undefined }) | TouchEvent): void {
-    if (!this.interactive) return;
-
-    let clientX = evt.targetTouches ? evt.targetTouches[0].pageX : evt.clientX;
-    let clientY = evt.targetTouches ? evt.targetTouches[0].pageY : evt.clientY;
-
-    this.mouse = this.getMousePosition(clientX, clientY);
-
-    //const rayCaster = new THREE.Raycaster();
-    //rayCaster.setFromCamera(mouse, this.camera);
-  }
-
-  // move(evt) {
-
-  // }
-
-  // up(evt) {
-
-  // }
 
   private showMessage(msg: string, fontSize = 20, onOK: () => void): void {
     const txt = document.getElementById('message_text')!;
@@ -388,6 +405,9 @@ export class Game {
       this.player.mixer.stopAllAction();
       action.reset().play();
     } else {
+      action.timeScale = (
+        name === PlayerAnimation.WALK &&
+        (this.player.move?.forward ?? 0) < 0) ? -0.3 : 1;
       action.reset().fadeIn(0.5).play();
     }
   }
@@ -397,61 +417,90 @@ export class Game {
   }
 
   private movePlayer(delta: number): void {
-    if (!this.player.object || !this.environmentProxy) {
+    if (!this.player.object || !this.player.move) {
       return;
     }
 
-    const pos = this.player.object.position.clone();
-    pos.y += 60;
-    const direction = this.player.object.getWorldDirection(new THREE.Vector3());
-    const raycaster = new THREE.Raycaster(pos, direction);
+    const position = this.player.object.position.clone();
+    position.y += 60;
+    const direction = new THREE.Vector3();
+    this.player.object.getWorldDirection(direction);
+
+    if (this.player.move.forward < 0) {
+      direction.negate();
+    }
+    const raycaster = new THREE.Raycaster(position, direction);
+    const box = this.environmentProxy;
     let blocked = false;
 
-    for (const box of this.environmentProxy.children) {
+    if (box) {
       const intersect = raycaster.intersectObject(box);
       if (intersect.length > 0) {
-        if (intersect[0].distance < 50) {
-          blocked = true;
-          break;
-        }
+        if (intersect[0].distance < 50) blocked = true;
       }
     }
 
-    if (!blocked && this.player.move!.forward > 0) {
-      this.player.object.translateZ(delta * 100);
+    if (!blocked) {
+      if (this.player.move.forward > 0) {
+        this.player.object.translateZ(delta * 100);
+      } else {
+        this.player.object.translateZ(-delta * 30);
+      }
     }
 
-    //cast left
-    {
-      direction.set(-1, 0, 0);
-      direction.applyMatrix4(this.player.object.matrix);
-      direction.normalize();
-      const raycaster = new THREE.Raycaster(pos, direction);
-
-      for (const box of this.environmentProxy.children) {
+    if (box) {
+      //cast left
+      {
+        direction.set(-1, 0, 0);
+        direction.applyMatrix4(this.player.object.matrix);
+        direction.normalize();
+        const raycaster = new THREE.Raycaster(position, direction);
         const intersect = raycaster.intersectObject(box);
         if (intersect.length > 0) {
-          if (intersect[0].distance < 80) {
-            this.player.object.translateX(-(intersect[0].distance - 80));
-            break;
+          if (intersect[0].distance < 50) {
+            this.player.object.translateX(50 - intersect[0].distance);
           }
         }
       }
-    }
 
-    //cast right
-    {
-      direction.set(1, 0, 0);
-      direction.applyMatrix4(this.player.object.matrix);
-      direction.normalize();
-      const raycaster = new THREE.Raycaster(pos, direction);
-
-      for (const box of this.environmentProxy.children) {
+      //cast right
+      {
+        direction.set(1, 0, 0);
+        direction.applyMatrix4(this.player.object.matrix);
+        direction.normalize();
+        const raycaster = new THREE.Raycaster(position, direction);
         const intersect = raycaster.intersectObject(box);
         if (intersect.length > 0) {
-          if (intersect[0].distance < 80) {
-            this.player.object.translateX(intersect[0].distance - 80);
-            break;
+          if (intersect[0].distance < 50) {
+            this.player.object.translateX(intersect[0].distance - 50);
+          }
+        }
+      }
+
+      //cast down
+      {
+        direction.set(0, -1, 0);
+        position.y += 200;
+        const raycaster = new THREE.Raycaster(position, direction);
+        const gravity = 30;
+        const intersect = raycaster.intersectObject(box);
+        if (intersect.length > 0) {
+          const targetY = position.y - intersect[0].distance;
+          if (targetY > this.player.object.position.y) {
+            //Going up
+            this.player.object.position.y = 0.8 * this.player.object.position.y + 0.2 * targetY;
+            this.player.velocityY = 0;
+          } else if (targetY < this.player.object.position.y) {
+            //Falling
+            if (this.player.velocityY === undefined) {
+              this.player.velocityY = 0;
+            }
+            this.player.velocityY += delta * gravity;
+            this.player.object.position.y -= this.player.velocityY;
+            if (this.player.object.position.y < targetY) {
+              this.player.velocityY = 0;
+              this.player.object.position.y = targetY;
+            }
           }
         }
       }
@@ -466,8 +515,10 @@ export class Game {
       this.player.mixer.update(delta)
     }
 
-    if (this.player.move !== undefined) {
-      this.movePlayer(delta)
+    if (this.player.move !== undefined ) {
+      if (this.player.move.forward !== 0) {
+        this.movePlayer(delta);
+      }
       this.player.object!.rotateY(this.player.move.turn * delta);
     }
 
@@ -481,11 +532,5 @@ export class Game {
     this.renderer!.render(this.scene!, this.camera!);
 
     // if (this.stats != undefined) this.stats.update();
-  }
-
-  private createDummyEnvironment(): void {
-    const env = createDummyEnvironment();
-    this.scene!.add(env);
-    this.environmentProxy = env;
   }
 }

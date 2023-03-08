@@ -30,4 +30,5 @@ export type Player = {
     forward: number;
     turn: number;
   };
+  velocityY?: number;
 } & Partial<Record<PlayerAnimation, THREE.AnimationClip>>;
