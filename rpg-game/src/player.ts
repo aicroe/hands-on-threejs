@@ -1,4 +1,4 @@
-export enum PlayerAnimation {
+export enum PlayerAction {
   ASCEND_STAIRS = 'ascend-stairs',
   CLIMB_LADDER = 'climb-ladder',
   CLIMB_ROPE = 'climb-rope',
@@ -25,10 +25,11 @@ export type Player = {
   mixer?: THREE.AnimationMixer;
   root?: THREE.Object3D | THREE.AnimationObjectGroup;
   object?: THREE.Object3D;
-  action?: PlayerAnimation;
+  action?: PlayerAction;
   move?: {
     forward: number;
     turn: number;
   };
   velocityY?: number;
-} & Partial<Record<PlayerAnimation, THREE.AnimationClip>>;
+  actionTime?: number;
+} & Partial<Record<PlayerAction, THREE.AnimationClip>>;

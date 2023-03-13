@@ -15,11 +15,11 @@ export class JoyStick {
     const circle = document.createElement('div');
     circle.style.cssText = `
       position: absolute;
-      bottom: 35px;
+      bottom: 45px;
       width: 80px;
       height: 80px;
       background: rgba(126, 126, 126, 0.5);
-      border: #444 solid medium;
+      border: #fff solid medium;
       border-radius: 50%;
       left: 50%;
       transform: translateX(-50%);

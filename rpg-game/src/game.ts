@@ -1,10 +1,13 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
+import Stats from 'three/examples/jsm/libs/stats.module';
 
+import { GameSFX, GameSFXManager } from './game-sfx-manager';
 import { JoyStick } from './joystick';
-import { Player, PlayerAnimation, PlayerCamera } from './player';
+import { Player, PlayerAction, PlayerCamera } from './player';
 import { Preloader } from './preloader';
 import { SFX } from './sfx';
+import { Tween } from './tween';
 
 export enum GameMode {
   NONE = 'none',
@@ -15,13 +18,19 @@ export enum GameMode {
   GAME_OVER = 'game_over'
 }
 
+interface GameDoors {
+  trigger: THREE.Object3D;
+  proxy: THREE.Object3D[];
+  doors: THREE.Object3D[];
+}
+
 export class Game {
   private mode = GameMode.NONE;
 
   private clock: THREE.Clock;
   private container: HTMLDivElement;
   private player: Player = {};
-  // private stats?: Stats;
+  private stats?: Stats;
   private camera?: THREE.PerspectiveCamera;
   private camerasOrder: PlayerCamera[] = [];
   private scene?: THREE.Scene;
@@ -35,20 +44,39 @@ export class Game {
   private debugPhysics = false;
   private cameraFade = 0.05;
   private environmentProxy?: THREE.Object3D;
+  private mute = false;
+  private collect: THREE.Object3D[] = [];
+  private fans: THREE.Object3D[] = [];
   private messages = {
     text: [
       'Welcome to LostTreasure',
       'GOOD LUCK!'
     ],
-    index: 0
+    index: 0,
   };
   private assetsPath = 'public/';
-  private anims: PlayerAnimation[];
+  private animations: PlayerAction[];
+  private sfxManager?: GameSFXManager;
+  private tweens: Tween[] = [];
+  private doors: GameDoors[] = [];
+  private cameraTarget?: { position: THREE.Vector3, target: THREE.Vector3 };
+  private actionButton?: HTMLButtonElement;
+  private onAction?: {
+    action: PlayerAction,
+    mode: 'open-doors' | 'collect'
+    index: number;
+    src?: string;
+  };
+  private collected?: number[];
   private mouse?: THREE.Vector2;
 
   constructor() {
     this.configureCameraButton();
     this.configureOverlay();
+    this.configureBriefcase();
+    this.configureActionButton();
+    this.configureSfxButton();
+
     this.container = document.createElement('div');
     this.container.style.height = '100%';
     document.body.appendChild(this.container);
@@ -56,20 +84,27 @@ export class Game {
     this.clock = new THREE.Clock();
 
     this.mode = GameMode.PRELOAD;
-    this.anims = [
-      PlayerAnimation.GATHER_OBJECTS,
-      PlayerAnimation.LOOK_AROUND,
-      PlayerAnimation.PUSH_BUTTON,
-      PlayerAnimation.RUN,
-      PlayerAnimation.STUMBLE_BACKWARDS,
+    this.animations = [
+      PlayerAction.ASCEND_STAIRS,
+      PlayerAction.GATHER_OBJECTS,
+      PlayerAction.LOOK_AROUND,
+      PlayerAction.PUSH_BUTTON,
+      PlayerAction.RUN,
+      PlayerAction.STUMBLE_BACKWARDS,
     ];
 
     const sfxExt = SFX.supportsAudioType('mp3') ? 'mp3' : 'ogg';
     new Preloader({
       assets: [
         `${this.assetsPath}sfx/gliss.${sfxExt}`,
+        `${this.assetsPath}sfx/factory.${sfxExt}`,
+        `${this.assetsPath}sfx/button.${sfxExt}`,
+        `${this.assetsPath}sfx/door.${sfxExt}`,
+        `${this.assetsPath}sfx/fan.${sfxExt}`,
         `${this.assetsPath}fbx/environment.fbx`,
-        ...this.anims.map((anim) => `${this.assetsPath}fbx/${anim}.fbx`),
+        `${this.assetsPath}fbx/girl-walk.fbx`,
+        `${this.assetsPath}fbx/usb.fbx`,
+        ...this.animations.map((anim) => `${this.assetsPath}fbx/${anim}.fbx`),
       ],
       oncomplete: () => {
         this.init();
@@ -115,6 +150,14 @@ export class Game {
       this.player.mixer = mixer;
       this.player.root = mixer.getRoot();
 
+      this.player.mixer.addEventListener('finished', () => {
+        this.setAction(PlayerAction.LOOK_AROUND);
+        if (this.player.cameras!.active === this.player.cameras!.collect) {
+          this.setActiveCamera(this.player.cameras!.back!);
+          this.toggleBriefcase();
+        }
+      })
+
       object.castShadow = true;
       object.name = 'Character';
       object.traverse((child) => {
@@ -133,7 +176,7 @@ export class Game {
       });
       this.createCameras();
       this.loadEnvironment(loader);
-    });
+    }, undefined, this.onError);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.outputEncoding = THREE.sRGBEncoding;
@@ -149,60 +192,120 @@ export class Game {
 
     // stats
     if (this.debug) {
-      // this.stats = new Stats();
-      // this.container.appendChild(this.stats.dom);
+      this.stats = Stats();
+      this.container.appendChild(this.stats.dom);
     }
+
+    this.initSfx();
   }
 
   private initSfx() {
     const context = new AudioContext();
-    new SFX({
+    this.sfxManager = {
       context,
-      src: { mp3: `${this.assetsPath}sfx/gliss.mp3`, ogg: `${this.assetsPath}sfx/gliss.ogg` },
-      loop: false,
-      volume: 0.3
-    });
+      records: (Object.values(GameSFX).reduce((accumulated, current) => {
+        return {
+          ...accumulated,
+          [current]: new SFX({
+            context,
+            src: { mp3: `${this.assetsPath}sfx/${current}.mp3`, ogg: `${this.assetsPath}sfx/${current}.ogg` },
+            loop: (current === GameSFX.FACTORY || current === GameSFX.FAN),
+            autoplay: (current === GameSFX.FACTORY || current === GameSFX.FAN),
+            volume: 0.3
+          }),
+        };
+      }, {} as Record<GameSFX, SFX>))
+    }
+
   }
 
   private loadEnvironment(loader: FBXLoader) {
     loader.load(`${this.assetsPath}fbx/environment.fbx`, (object) => {
       this.scene!.add(object);
+      this.doors = [];
+      this.fans = [];
 
       object.receiveShadow = true;
       object.scale.set(0.8, 0.8, 0.8);
       object.name = 'Environment';
+      let door = { trigger: null!, proxy: [], doors: [] } as GameDoors;
 
-      object.traverse(function (child) {
+      object.traverse((child) => {
+        const checkDoor = () => {
+          if (door.trigger !== null && door.proxy.length == 2 && door.doors.length == 2) {
+            this.doors.push(Object.assign({}, door));
+            door = { trigger: null!, proxy: [], doors: [] };
+          }
+        }
+
         if (child instanceof THREE.Mesh) {
           if (child.name.includes('main')) {
             child.castShadow = true;
             child.receiveShadow = true;
-          } else if (child.name.includes('proxy')) {
+          } else if (child.name.includes('mentproxy')) {
             child.material.visible = false;
+            this.environmentProxy = child;
+          } else if (child.name.includes('door-proxy')) {
+            child.material.visible = false;
+            door.proxy.push(child);
+            checkDoor();
+          } else if (child.name.includes('door')) {
+            door.doors.push(child);
+            checkDoor()
+          } else if (child.name.includes('fan')) {
+            this.fans.push(child);
+          }
+        } else {
+          if (child.name.includes('Door-null')) {
+            door.trigger = child;
+            checkDoor();
           }
         }
       });
 
-      this.loadNextAnim(loader);
-    });
+      this.loadUSB(loader);
+    }, undefined, this.onError);
+  }
+
+  private loadUSB(loader: FBXLoader): void {
+    loader.load(`${this.assetsPath}fbx/usb.fbx`, (object) => {
+      this.scene!.add(object);
+
+      const scale = 0.2;
+      object.scale.set(scale, scale, scale);
+      object.name = 'usb';
+      object.position.set(-416, 0.8, -472);
+      object.castShadow = true;
+
+      this.collect.push(object);
+
+      object.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+
+      this.loadNextAnimation(loader);
+    }, undefined, this.onError);
   }
 
   private configureCameraButton(): void {
-    const btn = document.createElement('button')!;
-    btn.style.cssText = `
-      padding: 4px 8px;
+    const button = document.createElement('button')!;
+    button.style.cssText = `
+      padding: 8px 8px;
       position: absolute;
       cursor: pointer;
-      right: 20px;
-      bottom: 20px;
-      background: rgba(126, 126, 126, 0.5);
+      right: 15px;
+      bottom: 15px;
+      background: #3B53A2;
       font-size: 30px;
       border-radius: 50%;
-      border: #444 solid medium;
+      border: #fff solid medium;
     `
-    btn.innerHTML = '📷';
-    btn.addEventListener('click', () => this.switchCamera());
-    document.body.appendChild(btn);
+    button.innerHTML = '📷';
+    button.addEventListener('click', () => this.switchCamera());
+    document.body.appendChild(button);
   }
 
   private configureOverlay(): void {
@@ -217,6 +320,184 @@ export class Game {
       opacity: 1;
     `;
     document.body.appendChild(overlay);
+  }
+
+  private configureBriefcase(): void {
+    const button = document.createElement('button');
+    button.style.cssText = `
+      padding: 8px 8px;
+      position: absolute;
+      cursor: pointer;
+      left: 15px;
+      bottom: 15px;
+      background: #3B53A2;
+      font-size: 30px;
+      border-radius: 50%;
+      border: #fff solid medium;
+    `;
+    button.innerHTML = '💼';
+    button.addEventListener('click', () => this.toggleBriefcase());
+    document.body.appendChild(button);
+
+    const briefcase = document.createElement('div');
+    briefcase.id = 'briefcase';
+    briefcase.style.cssText = `
+      position: absolute;
+      left: 20px;
+      bottom: 75px;
+      width: auto;
+      opacity: 0;
+      padding: 8px;
+      border-radius: 8px;
+      background: #3B53A2;
+      transition: opacity 0.5s;
+    `;
+
+    const briefcaseList = document.createElement('ul');
+    briefcaseList.id = 'briefcase-list';
+    briefcaseList.style.cssText = `
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    `;
+
+    const createBriefcaseItem = (): HTMLLIElement => {
+      const briefcaseItem = document.createElement('li');
+      briefcaseItem.innerHTML = `
+        <button style="all: unset; padding: 0 3px; cursor: pointer;">
+          <img width="100" height="75" />
+        </button>
+      `;
+      briefcaseItem.style.cssText = `
+        float: left;
+      `;
+
+      return briefcaseItem;
+    };
+
+    briefcaseList.appendChild(createBriefcaseItem());
+    briefcaseList.appendChild(createBriefcaseItem());
+    briefcaseList.appendChild(createBriefcaseItem());
+    briefcase.appendChild(briefcaseList);
+    document.body.appendChild(briefcase);
+  }
+
+  private configureActionButton(): void {
+    const button = document.createElement('button');
+    button.style.cssText = `
+      padding: 8px 8px;
+      position: absolute;
+      cursor: pointer;
+      left: 50%;
+      bottom: 5px;
+      transform: translateX(-50%);
+      background: #3B53A2;
+      font-size: 30px;
+      border-radius: 50%;
+      border: #fff solid medium;
+      z-index: 1;
+    `;
+    button.innerHTML = '👆';
+    button.addEventListener('click', () => this.contextAction());
+    document.body.appendChild(button);
+    this.actionButton = button;
+  }
+
+  private configureSfxButton(): void {
+    const button = document.createElement('button');
+    button.style.cssText = `
+      padding: 8px 8px;
+      position: absolute;
+      cursor: pointer;
+      right: 15px;
+      top: 15px;
+      background: #3B53A2;
+      font-size: 30px;
+      border-radius: 50%;
+      border: #fff solid medium;
+    `;
+    button.id = 'sfx-button';
+    button.innerHTML = '🔊';
+    button.addEventListener('click', () => this.toggleSound());
+    document.body.appendChild(button);
+  }
+
+  private toggleBriefcase(): void {
+    const briefcase = document.getElementById('briefcase')!;
+    const isOpen = +(briefcase.style.opacity) > 0;
+
+    if (isOpen) {
+      briefcase.style.opacity = '0';
+    } else {
+      briefcase.style.opacity = '1';
+    }
+  }
+
+  private toggleSound(): void {
+    if (!this.sfxManager) {
+      return;
+    }
+
+    this.mute = !this.mute;
+    const button = document.getElementById('sfx-button')!;
+
+    if (this.mute) {
+      Object.values(this.sfxManager.records).forEach((sfx) => {
+        sfx.stop();
+      });
+      button.innerHTML = '🔇';
+    } else {
+      this.sfxManager.records[GameSFX.FACTORY].play()
+      this.sfxManager.records[GameSFX.FAN].play();
+      button.innerHTML = '🔊';
+    }
+  }
+
+  private contextAction(): void {
+    if (!this.onAction || !this.sfxManager) {
+      return;
+    }
+
+    this.setAction(this.onAction.action);
+
+    switch (this.onAction.mode) {
+      case 'open-doors':
+        this.sfxManager.records[GameSFX.DOOR].play();
+        this.sfxManager.records[GameSFX.BUTTON].play();
+        const door = this.doors[this.onAction.index];
+        const left = door.doors[0];
+        const right = door.doors[1];
+        this.cameraTarget = { position: left.position.clone(), target: left.position.clone() };
+        this.cameraTarget.position.y += 150;
+        this.cameraTarget.position.x -= 950;
+        // Tween(target, channel, endValue, duration, oncomplete, easing='inOutQuad')
+        this.tweens.push(new Tween(left.position, 'z', left.position.z - 240, 2, (thisTween) => {
+          this.tweens.splice(this.tweens.indexOf(thisTween), 1);
+        }));
+        this.tweens.push(new Tween(right.position, 'z', right.position.z + 240, 2, (thisTween) => {
+          this.tweens.splice(this.tweens.indexOf(thisTween), 1);
+          delete this.cameraTarget;
+          const door = this.doors[this.onAction!.index];
+          const left = door.doors[0];
+          const right = door.doors[1];
+          const leftProxy = door.proxy[0];
+          const rightProxy = door.proxy[1];
+          leftProxy.position.copy(left.position);
+          rightProxy.position.copy(right.position);
+        }))
+        break;
+
+      case 'collect':
+        this.setActiveCamera(this.player.cameras!.collect!);
+        this.collect[this.onAction.index].visible = false;
+        this.collected = this.collected ?? [];
+        this.collected.push(this.onAction.index);
+
+        const briefcaseList = document.getElementById('briefcase-list')!;
+        const [currentSlot] = briefcaseList.children[this.onAction.index].getElementsByTagName('img')
+        currentSlot.src = this.onAction.src!;
+        break;
+    }
   }
 
   private switchCamera(fade = 0.05): void {
@@ -245,16 +526,16 @@ export class Game {
     }
 
     if (forward > 0) {
-      if (this.player.action !== PlayerAnimation.WALK) {
-        this.setAction(PlayerAnimation.WALK);
+      if (this.player.action !== PlayerAction.WALK && this.player.action !== PlayerAction.RUN) {
+        this.setAction(PlayerAction.WALK);
       }
     } else if (forward < -0.2) {
-      if (this.player.action !== PlayerAnimation.WALK) {
-        this.setAction(PlayerAnimation.WALK);
+      if (this.player.action !== PlayerAction.WALK) {
+        this.setAction(PlayerAction.WALK);
       }
     } else {
-      if (this.player.action === PlayerAnimation.WALK) {
-        this.setAction(PlayerAnimation.LOOK_AROUND);
+      if (this.player.action === PlayerAction.WALK || this.player.action === PlayerAction.RUN) {
+        this.setAction(PlayerAction.LOOK_AROUND);
       }
     }
   }
@@ -303,19 +584,20 @@ export class Game {
     this.player.cameras!.active = object;
   }
 
-  private loadNextAnim(loader: FBXLoader): void {
-    let anim = this.anims.pop()!;
-    loader.load(`${this.assetsPath}fbx/${anim}.fbx`, (object) => {
-      this.player[anim] = object.animations[0];
-      if (this.anims.length > 0) {
-        this.loadNextAnim(loader);
+  private loadNextAnimation(loader: FBXLoader): void {
+    const animation = this.animations.pop()!;
+    loader.load(`${this.assetsPath}fbx/${animation}.fbx`, (object) => {
+      this.player[animation] = object.animations[0];
+      if (this.animations.length > 0) {
+        this.loadNextAnimation(loader);
       } else {
-        this.anims = [];
-        this.setAction(PlayerAnimation.LOOK_AROUND);
+        this.animations = [];
+        this.setAction(PlayerAction.LOOK_AROUND);
+        this.initPlayerPosition();
         this.mode = GameMode.ACTIVE;
         this.hideOverlay();
       }
-    });
+    }, undefined, this.onError);
   }
 
   private hideOverlay(): void {
@@ -326,43 +608,21 @@ export class Game {
     }, false);
   }
 
-  private getMousePosition(clientX: number, clientY: number): THREE.Vector2 {
-    const pos = new THREE.Vector2();
-    pos.x = (clientX / this.renderer!.domElement.clientWidth) * 2 - 1;
-    pos.y = -(clientY / this.renderer!.domElement.clientHeight) * 2 + 1;
-    return pos;
-  }
-
-  private showMessage(msg: string, fontSize = 20, onOK: () => void): void {
-    const txt = document.getElementById('message_text')!;
-    txt.innerHTML = msg;
-    txt.style.fontSize = fontSize + 'px';
-    const btn = document.getElementById('message_ok')!;
-    const panel = document.getElementById('message')!;
-    if (onOK != null) {
-      btn.onclick = () => {
-        panel.style.display = 'none';
-        onOK();
-      }
-    } else {
-      btn.onclick = () => {
-        panel.style.display = 'none';
-      }
+  private initPlayerPosition(): void {
+    if (!this.player.object || !this.environmentProxy) {
+      return;
     }
-    panel.style.display = 'flex';
-  }
+    //cast down
+    const direction = new THREE.Vector3(0, -1, 0);
+    const position = this.player.object.position.clone();
+    position.y += 200;
+    const raycaster = new THREE.Raycaster(position, direction);
+    const box = this.environmentProxy;
 
-  private loadJSON(name: string, callback: (response: string) => void): void {
-    const xobj = new XMLHttpRequest();
-    xobj.overrideMimeType('application/json');
-    xobj.open('GET', `${name}.json`, true); // Replace 'my_data' with the path to your file
-    xobj.onreadystatechange = () => {
-      if (xobj.readyState === 4 && xobj.status === 200) {
-        // Required use of an anonymous callback as .open will NOT return a value but simply returns undefined in asynchronous mode
-        callback(xobj.responseText);
-      }
-    };
-    xobj.send(null);
+    const intersect = raycaster.intersectObject(box);
+    if (intersect.length > 0) {
+      this.player.object.position.y = position.y - intersect[0].distance;
+    }
   }
 
   private onWindowResize = () => {
@@ -375,7 +635,7 @@ export class Game {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  private setAction(name: PlayerAnimation): void {
+  private setAction(name: PlayerAction): void {
     if (!this.player.mixer || this.player.action === name) {
       return;
     }
@@ -389,31 +649,27 @@ export class Game {
 
     const anim = this.player[name];
     const action = this.player.mixer.clipAction(anim!, this.player.root);
-    const lastActionWasGatherObjs = this.player.action === PlayerAnimation.GATHER_OBJECTS;
 
-    if (lastActionWasGatherObjs) {
-      this.player.mixer.removeEventListener('finished', this.gatherObjectsFinished);
-    }
-    if (name === PlayerAnimation.GATHER_OBJECTS) {
-      action.loop = THREE.LoopOnce;
-      action.clampWhenFinished = true;
-      this.player.mixer.addEventListener('finished', this.gatherObjectsFinished);
-    }
+    if (this.isActionFinite(name)) {
+      action.loop = THREE.LoopOnce
+    };
 
-    this.player.action = name;
-    if (lastActionWasGatherObjs) {
+    const wasLastActionFinite = this.player.action && this.isActionFinite(this.player.action);
+    if (wasLastActionFinite) {
       this.player.mixer.stopAllAction();
       action.reset().play();
     } else {
       action.timeScale = (
-        name === PlayerAnimation.WALK &&
+        name === PlayerAction.WALK &&
         (this.player.move?.forward ?? 0) < 0) ? -0.3 : 1;
       action.reset().fadeIn(0.5).play();
     }
+    this.player.action = name;
+    this.player.actionTime = Date.now();
   }
 
-  private gatherObjectsFinished = () => {
-    this.setAction(PlayerAnimation.LOOK_AROUND);
+  private isActionFinite(action: PlayerAction): boolean {
+    return action === PlayerAction.PUSH_BUTTON || action === PlayerAction.GATHER_OBJECTS;
   }
 
   private movePlayer(delta: number): void {
@@ -442,13 +698,14 @@ export class Game {
 
     if (!blocked) {
       if (this.player.move.forward > 0) {
-        this.player.object.translateZ(delta * 100);
+        const speed = this.player.action === PlayerAction.RUN ? 200 : 100;
+        this.player.object.translateZ(delta * speed);
       } else {
         this.player.object.translateZ(-delta * 30);
       }
     }
 
-    if (box) {
+    if (box !== undefined) {
       //cast left
       {
         direction.set(-1, 0, 0);
@@ -511,11 +768,21 @@ export class Game {
     const delta = this.clock.getDelta();
     requestAnimationFrame(() => this.animate());
 
-    if (this.player.mixer !== undefined && this.mode === GameMode.ACTIVE) {
-      this.player.mixer.update(delta)
+    if (this.tweens.length > 0) {
+      this.tweens.forEach((tween) => tween.update(delta));
     }
 
-    if (this.player.move !== undefined ) {
+    if (this.player.mixer !== undefined && this.mode === GameMode.ACTIVE) {
+      this.player.mixer.update(delta);
+    }
+
+    if (this.player.action === PlayerAction.WALK) {
+      const elapsedTime = Date.now() - (this.player.actionTime ?? 0);
+      if (elapsedTime > 1000 && (this.player.move?.forward ?? 0) > 0) {
+        this.setAction(PlayerAction.RUN);
+      }
+    }
+    if (this.player.move !== undefined) {
       if (this.player.move.forward !== 0) {
         this.movePlayer(delta);
       }
@@ -524,13 +791,63 @@ export class Game {
 
     if (this.player.cameras !== undefined && this.player.cameras.active !== undefined) {
       this.camera!.position.lerp(this.player.cameras.active.getWorldPosition(new THREE.Vector3()), this.cameraFade);
-      const pos = this.player.object!.position.clone();
-      pos.y += 60;
-      this.camera!.lookAt(pos);
+      let position: THREE.Vector3;
+      if (this.cameraTarget !== undefined) {
+        this.camera!.position.copy(this.cameraTarget.position);
+        position = this.cameraTarget.target;
+      } else {
+        position = this.player.object!.position.clone();
+        position.y += 60;
+      }
+      this.camera!.lookAt(position);
+    }
+
+    this.actionButton!.style.display = 'none';
+    let trigger = false;
+
+    if (this.doors !== undefined) {
+      this.doors.forEach((door) => {
+        if (this.player.object!.position.distanceTo(door.trigger.position) < 100) {
+          this.actionButton!.style.display = 'block';
+          this.onAction = { action: PlayerAction.PUSH_BUTTON, mode: 'open-doors', index: 0 };
+          trigger = true;
+        }
+      });
+    }
+
+    if (this.collect !== undefined && !trigger) {
+      this.collect.forEach((object) => {
+        if (object.visible && this.player.object!.position.distanceTo(object.position) < 100) {
+          this.actionButton!.style.display = 'block';
+          this.onAction = { action: PlayerAction.GATHER_OBJECTS, mode: 'collect', index: 0, src: `${this.assetsPath}usb.jpg` };
+          trigger = true;
+        }
+      });
+    }
+
+    if (!trigger) {
+      delete this.onAction;
+    }
+
+    if (this.fans !== undefined) {
+      let volume = 0;
+      this.fans.forEach((fan) => {
+        const dist = fan.position.distanceTo(this.player.object!.position);
+        const temporalVolume = 1 - dist / 1000;
+        if (temporalVolume > volume) {
+          volume = temporalVolume;
+        }
+        fan.rotateZ(delta);
+      });
+      this.sfxManager!.records[GameSFX.FAN].volume = volume;
     }
 
     this.renderer!.render(this.scene!, this.camera!);
+    this.stats?.update();
+  }
 
-    // if (this.stats != undefined) this.stats.update();
+  private onError = (error: ErrorEvent) => {
+    console.error(JSON.stringify(error));
+    console.error(error.message);
   }
 }
