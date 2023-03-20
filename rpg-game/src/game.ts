@@ -35,25 +35,11 @@ export class Game {
   private camerasOrder: PlayerCamera[] = [];
   private scene?: THREE.Scene;
   private renderer?: THREE.WebGLRenderer;
-  private cellSize = 16;
-  private interactive = false;
-  private levelIndex = 0;
-  private _hints = 0;
-  private score = 0;
-  private debug = false;
-  private debugPhysics = false;
   private cameraFade = 0.05;
   private environmentProxy?: THREE.Object3D;
   private mute = false;
   private collect: THREE.Object3D[] = [];
   private fans: THREE.Object3D[] = [];
-  private messages = {
-    text: [
-      'Welcome to LostTreasure',
-      'GOOD LUCK!'
-    ],
-    index: 0,
-  };
   private assetsPath = 'public/';
   private animations: PlayerAction[];
   private sfxManager?: GameSFXManager;
@@ -68,9 +54,8 @@ export class Game {
     src?: string;
   };
   private collected?: number[];
-  private mouse?: THREE.Vector2;
 
-  constructor() {
+  constructor(private debug: boolean = false) {
     this.configureCameraButton();
     this.configureOverlay();
     this.configureBriefcase();
@@ -300,7 +285,7 @@ export class Game {
       bottom: 15px;
       background: #3B53A2;
       font-size: 30px;
-      border-radius: 50%;
+      border-radius: 30%;
       border: #fff solid medium;
     `
     button.innerHTML = '📷';
@@ -332,7 +317,7 @@ export class Game {
       bottom: 15px;
       background: #3B53A2;
       font-size: 30px;
-      border-radius: 50%;
+      border-radius: 30%;
       border: #fff solid medium;
     `;
     button.innerHTML = '💼';
@@ -393,7 +378,7 @@ export class Game {
       transform: translateX(-50%);
       background: #3B53A2;
       font-size: 30px;
-      border-radius: 50%;
+      border-radius: 30%;
       border: #fff solid medium;
       z-index: 1;
     `;
@@ -413,7 +398,7 @@ export class Game {
       top: 15px;
       background: #3B53A2;
       font-size: 30px;
-      border-radius: 50%;
+      border-radius: 30%;
       border: #fff solid medium;
     `;
     button.id = 'sfx-button';
